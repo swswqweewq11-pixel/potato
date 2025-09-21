@@ -225,6 +225,9 @@ def verify_hmac(secret: str, body: bytes, x_sig: str, x_ts: str, skew: int):
 
 # ---------- FastAPI ----------
 api = FastAPI()
+@api.get("/")
+async def root():
+    return {"ok": True}   # <-- ADD THIS
 _db = DB(DB_PATH)
 
 # queue for discord poster
