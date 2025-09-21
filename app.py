@@ -20,7 +20,9 @@ INGEST_HMAC_SECRET   = os.environ.get("INGEST_HMAC_SECRET", "")         # set in
 MAX_PAYLOAD_BYTES    = int(os.environ.get("MAX_PAYLOAD_BYTES", "262144"))    # set in Render (optional)
 TIMESTAMP_SKEW_SEC   = int(os.environ.get("TIMESTAMP_SKEW_SEC", "300"))      # set in Render (optional)
 HTTP_HOST            = "0.0.0.0"
-HTTP_PORT            = port_env = os.environ.get("PORT") or "8000" HTTP_PORT = int(port_env)              # Render provides PORT
+port_env = os.environ.get("PORT") or "8000"   # Render provides PORT (may be empty)
+HTTP_PORT = int(port_env)
+
 # ---------------------------------------------------------
 
 def _to_int(v: Optional[str]) -> Optional[int]:
