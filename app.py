@@ -1,3 +1,5 @@
+# app.py
+
 import os, asyncio, base64, hmac, hashlib, json, time
 from typing import Optional, Any, List, Dict, Tuple
 
@@ -13,8 +15,8 @@ from discord import app_commands
 # =========================
 # ENV (Render-compatible)
 # =========================
-DISCORD_TOKEN      = os.environ.get("DISCORD_TOKEN", "")
-INGEST_HMAC_SECRET = os.environ.get("INGEST_HMAC_SECRET", "")
+DISCORD_TOKEN      = os.environ.get("DISCORD_TOKEN", "")  # required
+INGEST_HMAC_SECRET = os.environ.get("INGEST_HMAC_SECRET", "")  # required
 DB_PATH            = os.environ.get("DB_PATH", "/tmp/activity.sqlite3")
 GUILD_ID           = os.environ.get("GUILD_ID", "0")
 ADMIN_ROLE_ID      = os.environ.get("ADMIN_ROLE_ID", "0")
@@ -27,17 +29,6 @@ TIMESTAMP_SKEW_SEC = int(os.environ.get("TIMESTAMP_SKEW_SEC", "300"))
 HTTP_HOST          = "0.0.0.0"
 HTTP_PORT          = int(os.environ.get("PORT") or 8000)
 # =========================
-import os, asyncio, base64, hmac, hashlib, json, time
-from typing import Optional, Any, List, Dict, Tuple
-
-import aiosqlite
-import uvicorn
-from fastapi import FastAPI, Request, Header, HTTPException
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError, field_validator
-import discord
-from discord.ext import commands, tasks
-from discord import app_commands
 
 def _to_int(v: Optional[str]) -> int:
     try:
@@ -60,8 +51,9 @@ ADMIN_ROLE_ID_I  = _to_int(ADMIN_ROLE_ID)
 ADMIN_USER_IDS_L = _parse_ids_csv(ADMIN_USER_IDS)
 LOG_CHANNEL_ID_I = _to_int(LOG_CHANNEL_ID)
 
-VALID_EVENT_TYPES = {"JOIN","LEAVE","CHAT","PURCHASE"}
+VALID_EVENT_TYPES = {"JOIN","LEAVE","CHAT","PURCHASE","ATTR"}
 
+# ---------- Models ----------
 class EventIn(BaseModel):
     ts: Optional[float] = None
     user_id: int
@@ -83,6 +75,7 @@ class EventIn(BaseModel):
 class EventBatchIn(BaseModel):
     events: List[EventIn]
 
+# ---------- DB ----------
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -290,6 +283,7 @@ class DB:
             out[name] = out.get(name, 0) + 1
         return out
 
+# ---------- HMAC ----------
 def verify_hmac(secret: str, body: bytes, x_sig: str, x_ts: str, skew: int):
     if not secret: raise HTTPException(status_code=500, detail="server not configured")
     if not x_sig or not x_ts: raise HTTPException(status_code=401, detail="missing signature")
@@ -301,6 +295,7 @@ def verify_hmac(secret: str, body: bytes, x_sig: str, x_ts: str, skew: int):
     b64 = base64.b64encode(mac).decode()
     if x_sig != b64 and x_sig != mac.hex(): raise HTTPException(status_code=401, detail="invalid signature")
 
+# ---------- FastAPI ----------
 api = FastAPI()
 
 @api.get("/")
@@ -315,15 +310,18 @@ _db = DB(DB_PATH)
 _log_queue: "asyncio.Queue[str]" = asyncio.Queue(maxsize=2000)
 
 def _fmt_line(e: Dict[str, Any]) -> str:
-    who = str(e.get("display_name") or e.get("username") or e.get("user_id"))
+    uid   = e.get("user_id")
+    un    = e.get("username") or "?"
+    dn    = e.get("display_name") or "?"
     extra = e.get("extra") or {}
-    ctry = extra.get("country")
+    ctry  = extra.get("country")
+    who   = f"{dn} • {un} • {uid}"
     if ctry:
         who = f"{who} [{ctry}]"
     t   = e.get("type") or "?"
     txt = e.get("text") or ""
     if len(txt) > 100: txt = txt[:97] + "…"
-    return f"[{t}] {who} {('- ' + txt) if txt else ''}".rstrip()
+    return f"[{t}] {who} - {txt}" if txt else f"[{t}] {who}"
 
 @api.post("/ingest")
 async def ingest(request: Request, x_signature: str = Header(None), x_timestamp: str = Header(None)):
@@ -347,6 +345,8 @@ async def ingest(request: Request, x_signature: str = Header(None), x_timestamp:
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors())
     n = await _db.insert_events(items)
+
+    # only post JOIN/LEAVE/CHAT/PURCHASE; keep ATTR in DB but don't spam logs
     if LOG_CHANNEL_ID_I:
         for e in items:
             et = (e.type or "").upper()
@@ -370,6 +370,7 @@ async def ingest(request: Request, x_signature: str = Header(None), x_timestamp:
                 break
     return JSONResponse({"ingested": n})
 
+# ---------- Discord ----------
 intents = discord.Intents.default()
 intents.guilds = True
 
