@@ -13,21 +13,20 @@ from discord import app_commands
 # =========================
 # ENV (Render-compatible)
 # =========================
-DISCORD_TOKEN        = os.environ.get("DISCORD_TOKEN", "")  # required
-INGEST_HMAC_SECRET   = os.environ.get("INGEST_HMAC_SECRET", "")  # required
-DB_PATH              = os.environ.get("DB_PATH", "/tmp/activity.sqlite3")
-GUILD_ID             = os.environ.get("GUILD_ID", "0")
-ADMIN_ROLE_ID        = os.environ.get("ADMIN_ROLE_ID", "0")
-ADMIN_USER_IDS       = os.environ.get("ADMIN_USER_IDS", "")
-LOG_CHANNEL_ID       = os.environ.get("LOG_CHANNEL_ID", "0")
-LOG_INTERVAL_SEC     = int(os.environ.get("LOG_INTERVAL_SEC", "5"))
-LOG_BATCH_MAX        = int(os.environ.get("LOG_BATCH_MAX", "15"))
-MAX_PAYLOAD_BYTES    = int(os.environ.get("MAX_PAYLOAD_BYTES", "262144"))
-TIMESTAMP_SKEW_SEC   = int(os.environ.get("TIMESTAMP_SKEW_SEC", "300"))
-HTTP_HOST            = "0.0.0.0"
-HTTP_PORT            = int(os.environ.get("PORT") or 8000)
+DISCORD_TOKEN      = os.environ.get("DISCORD_TOKEN", "")
+INGEST_HMAC_SECRET = os.environ.get("INGEST_HMAC_SECRET", "")
+DB_PATH            = os.environ.get("DB_PATH", "/tmp/activity.sqlite3")
+GUILD_ID           = os.environ.get("GUILD_ID", "0")
+ADMIN_ROLE_ID      = os.environ.get("ADMIN_ROLE_ID", "0")
+ADMIN_USER_IDS     = os.environ.get("ADMIN_USER_IDS", "")
+LOG_CHANNEL_ID     = os.environ.get("LOG_CHANNEL_ID", "0")
+LOG_INTERVAL_SEC   = int(os.environ.get("LOG_INTERVAL_SEC", "5"))
+LOG_BATCH_MAX      = int(os.environ.get("LOG_BATCH_MAX", "15"))
+MAX_PAYLOAD_BYTES  = int(os.environ.get("MAX_PAYLOAD_BYTES", "262144"))
+TIMESTAMP_SKEW_SEC = int(os.environ.get("TIMESTAMP_SKEW_SEC", "300"))
+HTTP_HOST          = "0.0.0.0"
+HTTP_PORT          = int(os.environ.get("PORT") or 8000)
 # =========================
-
 import os, asyncio, base64, hmac, hashlib, json, time
 from typing import Optional, Any, List, Dict, Tuple
 
