@@ -2,6 +2,19 @@
 
 import os, asyncio, base64, hmac, hashlib, json, time
 from typing import Optional, Any, List, Dict, Tuple
+
+# ---------- ENV (set these in Render dashboard) ----------
+DISCORD_TOKEN        = os.environ.get("DISCORD_TOKEN", "")                 # set in Render
+INGEST_HMAC_SECRET   = os.environ.get("INGEST_HMAC_SECRET", "")            # set in Render
+GUILD_ID             = os.environ.get("GUILD_ID", "0")                     # optional
+ADMIN_ROLE_ID        = os.environ.get("ADMIN_ROLE_ID", "0")                # optional
+DB_PATH              = os.environ.get("DB_PATH", "/tmp/activity.sqlite3")  # use /data/... if you mounted a disk
+MAX_PAYLOAD_BYTES    = int(os.environ.get("MAX_PAYLOAD_BYTES", "262144"))  # optional
+TIMESTAMP_SKEW_SEC   = int(os.environ.get("TIMESTAMP_SKEW_SEC", "300"))    # optional
+HTTP_HOST            = "0.0.0.0"
+HTTP_PORT            = int(os.environ.get("PORT") or 8000)                 # Render provides PORT (may be empty)
+# ---------------------------------------------------------
+
 import aiosqlite
 import uvicorn
 from fastapi import FastAPI, Request, Header, HTTPException
@@ -10,19 +23,6 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 import discord
 from discord.ext import commands
 from discord import app_commands
-
-# ---------- ENV (set these in Render Dashboard) ----------
-DISCORD_TOKEN        = os.environ.get("DISCORD_TOKEN", "")              # set in Render
-GUILD_ID             = os.environ.get("GUILD_ID", "0")                  # set in Render (optional)
-ADMIN_ROLE_ID        = os.environ.get("ADMIN_ROLE_ID", "0")             # set in Render (optional)
-DB_PATH              = os.environ.get("DB_PATH", "/data/activity.sqlite3")  # set in Render (or keep)
-INGEST_HMAC_SECRET   = os.environ.get("INGEST_HMAC_SECRET", "")         # set in Render
-MAX_PAYLOAD_BYTES    = int(os.environ.get("MAX_PAYLOAD_BYTES", "262144"))    # set in Render (optional)
-TIMESTAMP_SKEW_SEC   = int(os.environ.get("TIMESTAMP_SKEW_SEC", "300"))      # set in Render (optional)
-HTTP_HOST            = "0.0.0.0"
-HTTP_PORT = int(os.environ.get("PORT") or "8000")  # safe for empty or missing PORT
-
-# ---------------------------------------------------------
 
 def _to_int(v: Optional[str]) -> Optional[int]:
     try:
@@ -48,7 +48,6 @@ class EventIn(BaseModel):
     value: Optional[float] = None
     target_user_id: Optional[int] = None
     extra: Optional[Dict[str, Any]] = None
-
     @field_validator("type")
     @classmethod
     def _t(cls, v: str) -> str:
@@ -93,6 +92,9 @@ class DB:
         self.path = path
 
     async def init(self):
+        dirn = os.path.dirname(self.path)
+        if dirn and not os.path.exists(dirn):
+            os.makedirs(dirn, exist_ok=True)
         async with aiosqlite.connect(self.path) as db:
             await db.executescript(SCHEMA)
             await db.commit()
