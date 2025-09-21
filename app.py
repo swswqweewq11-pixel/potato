@@ -1,5 +1,4 @@
 # app.py
-
 import os, asyncio, base64, hmac, hashlib, json, time
 from typing import Optional, Any, List, Dict, Tuple
 
@@ -15,8 +14,8 @@ from discord import app_commands
 # =========================
 # ENV (Render-compatible)
 # =========================
-DISCORD_TOKEN      = os.environ.get("DISCORD_TOKEN", "")  # required
-INGEST_HMAC_SECRET = os.environ.get("INGEST_HMAC_SECRET", "")  # required
+DISCORD_TOKEN      = os.environ.get("DISCORD_TOKEN", "")           # required
+INGEST_HMAC_SECRET = os.environ.get("INGEST_HMAC_SECRET", "")      # required
 DB_PATH            = os.environ.get("DB_PATH", "/tmp/activity.sqlite3")
 GUILD_ID           = os.environ.get("GUILD_ID", "0")
 ADMIN_ROLE_ID      = os.environ.get("ADMIN_ROLE_ID", "0")
@@ -64,6 +63,7 @@ class EventIn(BaseModel):
     value: Optional[float] = None
     target_user_id: Optional[int] = None
     extra: Optional[Dict[str, Any]] = None
+
     @field_validator("type")
     @classmethod
     def _t(cls, v: str) -> str:
@@ -79,6 +79,7 @@ class EventBatchIn(BaseModel):
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
+
 CREATE TABLE IF NOT EXISTS players(
   user_id INTEGER PRIMARY KEY,
   username TEXT,
@@ -86,6 +87,7 @@ CREATE TABLE IF NOT EXISTS players(
   first_seen REAL,
   last_seen REAL
 );
+
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts REAL NOT NULL,
@@ -99,14 +101,23 @@ CREATE TABLE IF NOT EXISTS events(
   extra_json TEXT,
   FOREIGN KEY(user_id) REFERENCES players(user_id)
 );
+
 CREATE INDEX IF NOT EXISTS ix_events_ts ON events(ts DESC);
 CREATE INDEX IF NOT EXISTS ix_events_user_ts ON events(user_id, ts DESC);
 CREATE INDEX IF NOT EXISTS ix_events_type_ts ON events(type, ts DESC);
+
+-- First-join snapshot table
+CREATE TABLE IF NOT EXISTS profiles(
+  user_id INTEGER PRIMARY KEY,
+  first_join REAL,
+  first_country TEXT
+);
 """
 
 class DB:
     def __init__(self, path: str):
         self.path = path
+
     async def init(self):
         dirn = os.path.dirname(self.path)
         if dirn and not os.path.exists(dirn):
@@ -114,6 +125,7 @@ class DB:
         async with aiosqlite.connect(self.path) as db:
             await db.executescript(SCHEMA)
             await db.commit()
+
     async def upsert_player(self, uid: int, un: Optional[str], dn: Optional[str], ts: float):
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute("SELECT 1 FROM players WHERE user_id=?", (uid,))
@@ -129,25 +141,69 @@ class DB:
                     (uid, un, dn, ts, ts)
                 )
             await db.commit()
+
+    async def ensure_profile_on_join(self, uid: int, ts: float, first_country: Optional[str]):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO profiles(user_id, first_join, first_country) VALUES(?,?,?)",
+                (uid, ts, first_country)
+            )
+            if first_country:
+                await db.execute(
+                    "UPDATE profiles SET first_country=COALESCE(first_country, ?) WHERE user_id=?",
+                    (first_country, uid)
+                )
+            await db.commit()
+
+    async def get_profile(self, user_id: int) -> Tuple[Optional[float], Optional[str]]:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "SELECT first_join, first_country FROM profiles WHERE user_id=?",
+                (user_id,)
+            )
+            row = await cur.fetchone()
+        if not row:
+            return (None, None)
+        fj = float(row[0]) if row[0] is not None else None
+        fc = str(row[1]) if row[1] is not None else None
+        return (fj, fc)
+
     async def insert_events(self, items: List[EventIn]) -> int:
         if not items: return 0
         now = time.time()
         rows = []
+        joins: List[Tuple[int, float, Optional[str]]] = []  # (uid, ts, country)
+
         async with aiosqlite.connect(self.path) as db:
             for e in items:
                 ts = e.ts or now
                 await self.upsert_player(e.user_id, e.username, e.display_name, ts)
+
+                if (e.type or "").upper() == "JOIN":
+                    country = None
+                    if e.extra and isinstance(e.extra, dict):
+                        c = e.extra.get("country")
+                        if isinstance(c, str):
+                            country = c
+                    joins.append((e.user_id, ts, country))
+
                 rows.append((
                     ts, e.user_id, e.username, e.display_name, e.type, e.text,
                     e.value, e.target_user_id,
                     json.dumps(e.extra, separators=(",",":"), ensure_ascii=False) if e.extra else None
                 ))
+
             await db.executemany(
                 "INSERT INTO events(ts,user_id,username,display_name,type,text,value,target_user_id,extra_json) VALUES (?,?,?,?,?,?,?,?,?)",
                 rows
             )
             await db.commit()
+
+        for uid, ts, country in joins:
+            await self.ensure_profile_on_join(uid, ts, country)
+
         return len(rows)
+
     async def search_players(self, q: str, limit: int) -> List[Tuple[int,str,str,float,float]]:
         like = f"%{q}%"
         async with aiosqlite.connect(self.path) as db:
@@ -157,6 +213,7 @@ class DB:
                 "ORDER BY last_seen DESC LIMIT ?", (like, like, like, limit)
             )
             return await cur.fetchall()
+
     async def player_events(self, q: str, t: Optional[str], limit: int) -> List[Dict[str,Any]]:
         cand = await self.search_players(q, 1)
         if not cand: return []
@@ -181,6 +238,7 @@ class DB:
                 "extra": json.loads(r[8]),
             })
         return out
+
     async def recent_events(self, limit: int) -> List[Dict[str,Any]]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute(
@@ -195,27 +253,31 @@ class DB:
                 "extra": json.loads(r[8]),
             } for r in rows
         ]
+
     async def counts_by_type(self) -> List[Tuple[str,int]]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute("SELECT type, COUNT(*) FROM events GROUP BY type ORDER BY COUNT(*) DESC")
             return await cur.fetchall()
+
     async def last_join_before(self, user_id: int, ts: float) -> Optional[float]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute("SELECT MAX(ts) FROM events WHERE user_id=? AND type='JOIN' AND ts<=?", (user_id, ts))
             row = await cur.fetchone()
         return float(row[0]) if row and row[0] is not None else None
+
     async def first_join(self, user_id: int) -> Optional[float]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute("SELECT MIN(ts) FROM events WHERE user_id=? AND type='JOIN'", (user_id,))
             row = await cur.fetchone()
         return float(row[0]) if row and row[0] is not None else None
+
     async def current_players(self) -> List[Tuple[int,str,str,float,float]]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute("""
                 SELECT p.user_id,
                        p.username,
                        p.display_name,
-                       (SELECT MAX(ts) FROM events e1 WHERE e1.user_id=p.user_id AND e1.type='JOIN') AS last_join,
+                       (SELECT MAX(ts) FROM events e1 WHERE e1.user_id=p.user_id AND e1.type='JOIN')  AS last_join,
                        (SELECT MAX(ts) FROM events e2 WHERE e2.user_id=p.user_id AND e2.type='LEAVE') AS last_leave
                 FROM players p
             """)
@@ -227,6 +289,7 @@ class DB:
             if ljf > llf:
                 out.append((uid, un, dn, ljf, llf))
         return out
+
     async def last_country(self, user_id: int) -> Optional[str]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute("SELECT extra_json FROM events WHERE user_id=? AND extra_json IS NOT NULL ORDER BY ts DESC LIMIT 100", (user_id,))
@@ -239,6 +302,7 @@ class DB:
             except Exception:
                 continue
         return None
+
     async def total_seconds_latest(self, user_id: int) -> Optional[int]:
         best = None
         async with aiosqlite.connect(self.path) as db:
@@ -254,6 +318,7 @@ class DB:
             except Exception:
                 continue
         return best
+
     async def credits_latest(self, user_id: int) -> Optional[int]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute("SELECT extra_json FROM events WHERE user_id=? AND extra_json IS NOT NULL ORDER BY ts DESC LIMIT 200", (user_id,))
@@ -267,10 +332,14 @@ class DB:
             except Exception:
                 continue
         return None
+
     async def purchases_by_category(self, user_id: int, category: str) -> Dict[str, int]:
         out: Dict[str, int] = {}
         async with aiosqlite.connect(self.path) as db:
-            cur = await db.execute("SELECT text, COALESCE(extra_json,'{}') FROM events WHERE user_id=? AND type='PURCHASE' ORDER BY ts DESC LIMIT 1000", (user_id,))
+            cur = await db.execute(
+                "SELECT text, COALESCE(extra_json,'{}') FROM events WHERE user_id=? AND type='PURCHASE' ORDER BY ts DESC LIMIT 1000",
+                (user_id,)
+            )
             rows = await cur.fetchall()
         for txt, j in rows:
             try:
@@ -329,10 +398,12 @@ async def ingest(request: Request, x_signature: str = Header(None), x_timestamp:
     if len(body) > MAX_PAYLOAD_BYTES:
         raise HTTPException(status_code=413, detail="payload too large")
     verify_hmac(INGEST_HMAC_SECRET, body, x_signature or "", x_timestamp or "", TIMESTAMP_SKEW_SEC)
+
     try:
         data = json.loads(body.decode("utf-8"))
     except Exception:
         raise HTTPException(status_code=400, detail="invalid json")
+
     try:
         if isinstance(data, dict) and "events" in data:
             items = EventBatchIn(**data).events
@@ -344,9 +415,10 @@ async def ingest(request: Request, x_signature: str = Header(None), x_timestamp:
             raise HTTPException(status_code=400, detail="invalid shape")
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors())
+
     n = await _db.insert_events(items)
 
-    # only post JOIN/LEAVE/CHAT/PURCHASE; keep ATTR in DB but don't spam logs
+    # Only post JOIN/LEAVE/CHAT/PURCHASE to Discord; keep ATTR in DB without spamming
     if LOG_CHANNEL_ID_I:
         for e in items:
             et = (e.type or "").upper()
@@ -368,12 +440,12 @@ async def ingest(request: Request, x_signature: str = Header(None), x_timestamp:
                 await _log_queue.put(_fmt_line(ed))
             except asyncio.QueueFull:
                 break
+
     return JSONResponse({"ingested": n})
 
 # ---------- Discord ----------
 intents = discord.Intents.default()
 intents.guilds = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 def _has_admin(member: discord.Member) -> bool:
@@ -505,16 +577,18 @@ async def currentlyplaying_cmd(interaction: discord.Interaction):
     for ch in chunks[1:]:
         await interaction.followup.send("```\n" + ch + "\n```", ephemeral=True)
 
-@bot.tree.command(name="firstjoin", description="First time player joined")
+@bot.tree.command(name="firstjoin", description="First time player joined the game (ever)")
 @app_commands.describe(roblox_user_id="numeric Roblox user id")
 @admin_only()
 async def firstjoin_cmd(interaction: discord.Interaction, roblox_user_id: str):
     try: uid = int(roblox_user_id)
     except: await interaction.response.send_message("Bad id.", ephemeral=True); return
-    ts = await _db.first_join(uid)
-    if not ts:
+    fj, _ = await _db.get_profile(uid)
+    if fj is None:
+        fj = await _db.first_join(uid)
+    if not fj:
         await interaction.response.send_message("No data.", ephemeral=True); return
-    await interaction.response.send_message(_fmt_ts(ts), ephemeral=True)
+    await interaction.response.send_message(_fmt_ts(fj), ephemeral=True)
 
 @bot.tree.command(name="country", description="Last known country for player")
 @app_commands.describe(roblox_user_id="numeric Roblox user id")
@@ -547,6 +621,32 @@ async def credits_cmd(interaction: discord.Interaction, roblox_user_id: str):
     if cr is None:
         await interaction.response.send_message("No data.", ephemeral=True); return
     await interaction.response.send_message(f"{cr}", ephemeral=True)
+
+@bot.tree.command(name="profile", description="Profile snapshot (first join & country, plus totals)")
+@app_commands.describe(roblox_user_id="numeric Roblox user id")
+@admin_only()
+async def profile_cmd(interaction: discord.Interaction, roblox_user_id: str):
+    try:
+        uid = int(roblox_user_id)
+    except:
+        await interaction.response.send_message("Bad id.", ephemeral=True); return
+
+    fj, fc = await _db.get_profile(uid)
+    if fj is None:
+        fj = await _db.first_join(uid)
+
+    lc = await _db.last_country(uid)
+    total_secs = await _db.total_seconds_latest(uid)
+    credits = await _db.credits_latest(uid)
+
+    lines = [f"user_id: {uid}"]
+    if fj: lines.append(f"first_join: {_fmt_ts(fj)}")
+    if fc: lines.append(f"first_country: {fc}")
+    if lc: lines.append(f"last_country: {lc}")
+    if total_secs is not None: lines.append(f"total_minutes: {total_secs//60}")
+    if credits is not None: lines.append(f"credits: {credits}")
+
+    await interaction.response.send_message("```\n" + "\n".join(lines) + "\n```", ephemeral=True)
 
 @bot.tree.error
 async def on_app_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -602,6 +702,7 @@ async def on_ready():
     if not _poster.is_running():
         _poster.start()
 
+# ---------- App runners ----------
 async def _run_http():
     await _db.init()
     cfg = uvicorn.Config(api, host=HTTP_HOST, port=HTTP_PORT, log_level="info")
