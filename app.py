@@ -1,3 +1,15 @@
+import os, asyncio, base64, hmac, hashlib, json, time
+from typing import Optional, Any, List, Dict, Tuple
+
+import aiosqlite
+import uvicorn
+from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ValidationError, field_validator
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+
 # =========================
 # ENV (Render-compatible)
 # =========================
@@ -7,7 +19,7 @@ DB_PATH              = os.environ.get("DB_PATH", "/tmp/activity.sqlite3")
 GUILD_ID             = os.environ.get("GUILD_ID", "0")
 ADMIN_ROLE_ID        = os.environ.get("ADMIN_ROLE_ID", "0")
 ADMIN_USER_IDS       = os.environ.get("ADMIN_USER_IDS", "")
-LOG_CHANNEL_ID       = os.environ.get("LOG_CHANNEL_ID", "0")  # set to a text channel id to enable auto-posting; "0" disables
+LOG_CHANNEL_ID       = os.environ.get("LOG_CHANNEL_ID", "0")
 LOG_INTERVAL_SEC     = int(os.environ.get("LOG_INTERVAL_SEC", "5"))
 LOG_BATCH_MAX        = int(os.environ.get("LOG_BATCH_MAX", "15"))
 MAX_PAYLOAD_BYTES    = int(os.environ.get("MAX_PAYLOAD_BYTES", "262144"))
