@@ -11,6 +11,16 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 
+def _mk_activity(text: str, kind: str = "watching") -> discord.Activity:
+    k = (kind or "").strip().lower()
+    t = {
+        "playing":   discord.ActivityType.playing,
+        "watching":  discord.ActivityType.watching,
+        "listening": discord.ActivityType.listening,
+        "competing": discord.ActivityType.competing,
+    }.get(k, discord.ActivityType.watching)
+    return discord.Activity(type=t, name=text or "online")
+
 # =========================
 # ENV (Render-compatible)
 # =========================
@@ -27,6 +37,9 @@ MAX_PAYLOAD_BYTES  = int(os.environ.get("MAX_PAYLOAD_BYTES", "262144"))
 TIMESTAMP_SKEW_SEC = int(os.environ.get("TIMESTAMP_SKEW_SEC", "300"))
 HTTP_HOST          = "0.0.0.0"
 HTTP_PORT          = int(os.environ.get("PORT") or 8000)
+
+STATUS_TEXT        = os.environ.get("STATUS_TEXT", "Ingest logger online")
+STATUS_TYPE        = os.environ.get("STATUS_TYPE", "watching")  # playing|watching|listening|competing
 # =========================
 
 def _to_int(v: Optional[str]) -> int:
@@ -701,6 +714,15 @@ async def on_ready():
         pass
     if not _poster.is_running():
         _poster.start()
+
+    # ---- Set Discord status/presence (ADD THESE LINES) ----
+    try:
+        await bot.change_presence(
+            status=discord.Status.online,
+            activity=_mk_activity(STATUS_TEXT, STATUS_TYPE),
+        )
+    except Exception:
+        pass
 
 # ---------- App runners ----------
 async def _run_http():
